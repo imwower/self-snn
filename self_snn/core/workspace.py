@@ -68,7 +68,14 @@ class SelfSNN(nn.Module):
         if ext_drive is not None:
             ext_drive = ext_drive.to(device)
             L = min(ext_drive.shape[0], spikes.shape[0])
-            spikes[:L] = spikes[:L] | (ext_drive[:L] > 0)
+            if ext_drive.dim() == 1:
+                drive = ext_drive.unsqueeze(0).expand(L, -1)
+            else:
+                drive = ext_drive[:L]
+            if drive.shape[1] != spikes.shape[1]:
+                drive = drive[:, : spikes.shape[1]]
+            drive_spikes = (drive > 0).to(spikes.dtype)
+            spikes[:L] = torch.clamp(spikes[:L] + drive_spikes, 0.0, 1.0)
 
         wm_state = self.workspace_wm(spikes)
         pred, pred_err = self.pred(wm_state)
