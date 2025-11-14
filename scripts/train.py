@@ -180,12 +180,16 @@ def main() -> None:
             writer.add_scalar("mcc/ignition_rate", float(out["ignition_rate"]), epoch)
             writer.add_scalar("mcc/branching_kappa", float(out["branching_kappa"]), epoch)
 
-            # 发放率与 synops 估计
+            # 发放率与 synops 估计（能耗曲线）
             spikes = out["spikes"].float()
             spikes_per_s = float(spikes.mean() * 1000.0 / max(model_cfg.dt_ms, 1e-3))
             synops_est = float(spikes.numel())
             writer.add_scalar("energy/spikes_per_s", spikes_per_s, epoch)
             writer.add_scalar("energy/synops", synops_est, epoch)
+
+            act_out = out["act_out"]
+            epoch_energy = float(act_out.get("energy", 0.0))
+            writer.add_scalar("energy/curve", epoch_energy, epoch)
 
             # Router 使用情况（Top-K 激活比例 & 概率分布）
             router_stats = out["router_stats"]
@@ -193,6 +197,20 @@ def main() -> None:
             writer.add_scalar("router/moe_energy_ratio", float(out["moe_energy_ratio"]), epoch)
             for i, p in enumerate(probs):
                 writer.add_scalar(f"router/topk_usage/expert_{i}", float(p), epoch)
+
+            # 意图效用（Intent Utility）
+            utilities = out["utilities"]
+            if utilities.numel() > 0:
+                util_mean = float(utilities.mean().detach())
+                util_max = float(utilities.max().detach())
+                writer.add_scalar("agency/intent_utility_mean", util_mean, epoch)
+                writer.add_scalar("agency/intent_utility_best", util_max, epoch)
+                writer.add_histogram("agency/intent_utilities", utilities.detach(), epoch)
+
+            # 承诺曲线（Commit Rate Curve）
+            commit_state = out["commit_state"]
+            committed = 1.0 if commit_state.get("committed", False) else 0.0
+            writer.add_scalar("agency/commit_rate_curve", committed, epoch)
 
             # 自我信用分
             writer.add_scalar("self/credit", float(out["self_credit"]), epoch)
