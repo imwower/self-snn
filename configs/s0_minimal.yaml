@@ -1,0 +1,12 @@
+backend: {engine: torch-spkj, device: cpu}
+mcc:
+  pmc: {N:64, ring_delay_ms:8, ou_sigma:0.6, target_rate_hz:3.0}
+  sn:  {err_tau_ms:50, gain_max:2.0}
+  gw:  {hubs:160, ignite_thr:0.58, nmda_tau_ms:100, wta_inh:0.85, k_select:2}
+  wm:  {microcolumns:3, neurons_per_uCol:[80,20], stf_tau_ms:200}
+  mm:  {conf_window_ms:300, temp_base:0.7}
+memory:
+  delay: {dmax:120, dt_ms:1, eta_d:0.1, delta_step:1, delay_entropy_reg:1e-4}
+router:
+  experts: {M:16, K:2}
+

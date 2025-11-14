@@ -11,6 +11,9 @@ __pycache__/
 .venv/
 venv/
 env/
+self_snn.egg-info/
+runs/
+data/
 
 # Build / dist
 build/

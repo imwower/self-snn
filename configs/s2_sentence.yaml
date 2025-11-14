@@ -1,0 +1,3 @@
+backend: {engine: torch-spkj, device: cpu}
+task: sentences_images
+
