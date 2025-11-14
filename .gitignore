@@ -1,0 +1,21 @@
+# IDE & editor
+.idea/
+.vscode/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Build / dist
+build/
+dist/
+*.egg-info/
+
+# OS files
+.DS_Store
