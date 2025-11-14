@@ -3,6 +3,7 @@ from pathlib import Path
 
 import torch
 import yaml
+from torch.utils.tensorboard import SummaryWriter
 
 from self_snn.core.workspace import SelfSNN, SelfSNNConfig
 from self_snn.core.pacemaker import PacemakerConfig
@@ -148,6 +149,7 @@ def main() -> None:
     # 优先使用命令行 logdir，其次配置文件 logging.logdir，最后默认 runs/debug
     logdir = args.logdir or cfg.get("logging", {}).get("logdir", "runs/debug")
     logger = setup_logger(logdir)
+    writer = SummaryWriter(logdir)
 
     # 优先使用命令行 duration，其次 runtime.duration_s
     duration = args.duration or int(cfg.get("runtime", {}).get("duration_s", 180))
@@ -155,16 +157,61 @@ def main() -> None:
     task = cfg.get("task", "unspecified")
     logger.info(f"启动训练 task={task}, duration={duration}")
 
-    for epoch in range(3):
-        out = model(steps=duration)
-        log_pacemaker(logger, "θ/γ 节律=..., 噪声σ=... 已启动")
-        log_self(logger, model.self_model.report())
-        loss = out["prediction_error"].abs().mean()
-        loss.backward()
-        for p in model.parameters():
-            if p.grad is not None:
-                p.data -= 1e-4 * p.grad
-                p.grad.zero_()
+    try:
+        for epoch in range(3):
+            out = model(steps=duration)
+
+            # 文本日志
+            log_pacemaker(logger, "θ/γ 节律=..., 噪声σ=... 已启动")
+            log_self(logger, model.self_model.report())
+
+            # 基本 loss
+            loss = out["prediction_error"].abs().mean()
+            writer.add_scalar("loss/train", float(loss.detach()), epoch)
+
+            # 奖励（这里用 confidence 近似内在奖励，占位符 0 表示外在奖励）
+            meta = out["meta"]
+            r_int = float(meta["confidence"].detach())
+            r_ext = 0.0
+            writer.add_scalar("reward/r_int", r_int, epoch)
+            writer.add_scalar("reward/r_ext", r_ext, epoch)
+
+            # 点火 & 分支系数
+            writer.add_scalar("mcc/ignition_rate", float(out["ignition_rate"]), epoch)
+            writer.add_scalar("mcc/branching_kappa", float(out["branching_kappa"]), epoch)
+
+            # 发放率与 synops 估计
+            spikes = out["spikes"].float()
+            spikes_per_s = float(spikes.mean() * 1000.0 / max(model_cfg.dt_ms, 1e-3))
+            synops_est = float(spikes.numel())
+            writer.add_scalar("energy/spikes_per_s", spikes_per_s, epoch)
+            writer.add_scalar("energy/synops", synops_est, epoch)
+
+            # Router 使用情况（Top-K 激活比例 & 概率分布）
+            router_stats = out["router_stats"]
+            probs = router_stats["probs"]
+            writer.add_scalar("router/moe_energy_ratio", float(out["moe_energy_ratio"]), epoch)
+            for i, p in enumerate(probs):
+                writer.add_scalar(f"router/topk_usage/expert_{i}", float(p), epoch)
+
+            # 自我信用分
+            writer.add_scalar("self/credit", float(out["self_credit"]), epoch)
+
+            # 栅格图像（截取前 64x64，灰度图）
+            t_max = min(spikes.shape[0], 64)
+            n_max = min(spikes.shape[1], 64)
+            raster = spikes[:t_max, :n_max]
+            img = raster.unsqueeze(0)  # [1, T, N] 作为单通道图像
+            writer.add_image("figs/raster_spikes", img, epoch, dataformats="CHW")
+
+            # 反向传播与简单 SGD
+            loss.backward()
+            for p in model.parameters():
+                if p.grad is not None:
+                    p.data -= 1e-4 * p.grad
+                    p.grad.zero_()
+    finally:
+        writer.close()
 
 
 if __name__ == "__main__":
