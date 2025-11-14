@@ -92,6 +92,23 @@ class SelfSNN(nn.Module):
 
         self.self_model.update_state(meta, act_out)
 
+        # v0: 自发 / 点火统计（简化版）
+        spikes_f = spikes.float()
+        spike_counts = spikes_f.sum(dim=1)
+        n_neurons = spikes.shape[1]
+        ignition_steps = spike_counts > 0.1 * float(n_neurons)
+        ignition_rate = ignition_steps.float().mean()
+        if spike_counts.numel() > 1:
+            ratio = spike_counts[1:] / torch.clamp(spike_counts[:-1], min=1.0)
+            branching_kappa = ratio.mean()
+        else:
+            branching_kappa = torch.tensor(1.0, device=device)
+
+        # v1: 条件计算能耗（Top-K 专家占比）
+        num_experts = gw_mask.numel()
+        active_experts = gw_mask.sum()
+        moe_energy_ratio = active_experts / max(float(num_experts), 1.0)
+
         return {
             "spikes": spikes,
             "wm_state": wm_state,
@@ -106,4 +123,7 @@ class SelfSNN(nn.Module):
             "commit_state": commit_state,
             "act_out": act_out,
             "self_credit": credit,
+            "ignition_rate": ignition_rate,
+            "branching_kappa": branching_kappa,
+            "moe_energy_ratio": moe_energy_ratio,
         }

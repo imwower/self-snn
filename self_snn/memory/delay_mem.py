@@ -50,10 +50,15 @@ class DelayMemory:
         return torch.cat([pad, seq], dim=0)[: self.config.dmax]
 
     def consolidate(self) -> None:
-        pass
+        # 简单“睡眠巩固”：同一键下的多次写入取平均，只保留 1 条
+        for k, seqs in list(self._storage.items()):
+            if len(seqs) <= 1:
+                continue
+            stacked = torch.stack(seqs, dim=0)
+            mean_seq = stacked.mean(dim=0)
+            self._storage[k] = [mean_seq]
 
     def erase(self, key: torch.Tensor) -> None:
         tkey = self._key_to_tuple(key)
         self._storage.pop(tkey, None)
         self._delays.pop(tkey, None)
-
