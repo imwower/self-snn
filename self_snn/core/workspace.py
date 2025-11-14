@@ -82,6 +82,10 @@ class SelfSNN(nn.Module):
         gain = self.salience(pred_err, dt_ms=self.config.dt_ms)
         meta = self.meta(pred_err, gain)
 
+        # D-MEM: 基于 spike 统计与第三因子（这里用 confidence - uncertainty 近似）
+        spike_counts = spikes.float().sum(dim=1)
+        third_factor = float((meta["confidence"] - meta["uncertainty"]).detach())
+        self.memory.update_delay_from_spikes(self.self_model.key, spike_counts, third_factor=third_factor)
         self.memory.write(key=self.self_model.key, sequence=wm_state)
 
         gw_mask, router_stats = self.router(wm_state)
