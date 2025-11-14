@@ -1,21 +1,23 @@
 import argparse
 
-import torch
-
-from self_snn.router.router import GWRouter, RouterConfig
+from self_snn.core.workspace import SelfSNN, SelfSNNConfig
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--logdir", type=str, default="runs/agency_moe")
+    parser.add_argument("--steps", type=int, default=100)
     args = parser.parse_args()
 
-    router = GWRouter(RouterConfig())
-    wm_state = torch.randn(128)
-    mask, stats = router(wm_state)
-    print("router topk", stats["topk"], "balance_loss", float(stats["balance_loss"]))
+    model = SelfSNN(SelfSNNConfig())
+    out = model(steps=args.steps)
+
+    router_stats = out["router_stats"]
+    moe_ratio = float(out["moe_energy_ratio"])
+    topk = router_stats["topk"]
+
+    print("router topk indices:", topk.tolist())
+    print(f"estimated MoE energy ratio (masked/dense synops): {moe_ratio:.3f}")
 
 
 if __name__ == "__main__":
     main()
-

@@ -13,6 +13,7 @@ from .introspect import MetaIntrospector, MetaConfig
 from ..memory.delay_mem import DelayMemory, DelayMemoryConfig
 from ..worldmodel.pred_code import PredictiveCoder, PredictiveCoderConfig
 from ..router.router import GWRouter, RouterConfig
+from ..router.experts import MaskedExperts, ExpertsConfig
 from ..agency.self_model import SelfModel, SelfModelConfig
 from ..agency.intention import IntentionModule, IntentionConfig
 from ..agency.commit import CommitModule, CommitConfig
@@ -32,6 +33,7 @@ class SelfSNNConfig:
     delay: DelayMemoryConfig = field(default_factory=DelayMemoryConfig)
     pred: PredictiveCoderConfig = field(default_factory=PredictiveCoderConfig)
     router: RouterConfig = field(default_factory=RouterConfig)
+    experts: ExpertsConfig = field(default_factory=ExpertsConfig)
     self_model: SelfModelConfig = field(default_factory=SelfModelConfig)
     intention: IntentionConfig = field(default_factory=IntentionConfig)
     commit: CommitConfig = field(default_factory=CommitConfig)
@@ -52,6 +54,16 @@ class SelfSNN(nn.Module):
         self.memory = DelayMemory(config.delay)
         self.pred = PredictiveCoder(config.pred)
         self.router = GWRouter(config.router)
+
+        # 将 WM 状态映射到 MoE / 世界模型的隐空间
+        self.wm_to_hidden = nn.Linear(1, config.pred.hidden_dim)
+        # GW-MoE 专家网络：条件计算
+        experts_cfg = ExpertsConfig(
+            input_dim=config.pred.hidden_dim,
+            output_dim=config.pred.hidden_dim,
+            num_experts=config.router.num_experts,
+        )
+        self.experts = MaskedExperts(experts_cfg)
 
         self.self_model = SelfModel(config.self_model)
         self.intention = IntentionModule(config.intention)
@@ -78,7 +90,18 @@ class SelfSNN(nn.Module):
             spikes[:L] = torch.clamp(spikes[:L] + drive_spikes, 0.0, 1.0)
 
         wm_state = self.workspace_wm(spikes)
-        pred, pred_err = self.pred(wm_state)
+        # 将 WM 状态映射到 MoE / 世界模型隐藏空间
+        hidden = self.wm_to_hidden(wm_state.unsqueeze(0)).squeeze(0)
+
+        # GW-MoE: 条件专家选择
+        gw_mask, router_stats = self.router(hidden)
+        # 条件计算：仅对被选中的专家执行前向
+        expert_out, synops = self.experts(hidden, gw_mask)
+
+        # 世界模型在专家输出的隐藏表示上工作
+        pred, pred_err = self.pred(expert_out)
+
+        # Salience / Meta 内省
         gain = self.salience(pred_err, dt_ms=self.config.dt_ms)
         meta = self.meta(pred_err, gain)
 
@@ -88,7 +111,6 @@ class SelfSNN(nn.Module):
         self.memory.update_delay_from_spikes(self.self_model.key, spike_counts, third_factor=third_factor)
         self.memory.write(key=self.self_model.key, sequence=wm_state)
 
-        gw_mask, router_stats = self.router(wm_state)
         goals, utilities = self.intention(self.memory, self.pred, self.self_model)
         commit_state = self.commit(goals, utilities, meta, self.self_model)
         act_out = self.act(commit_state, wm_state, gw_mask)
@@ -108,10 +130,12 @@ class SelfSNN(nn.Module):
         else:
             branching_kappa = torch.tensor(1.0, device=device)
 
-        # v1: 条件计算能耗（Top-K 专家占比）
-        num_experts = gw_mask.numel()
-        active_experts = gw_mask.sum()
-        moe_energy_ratio = active_experts / max(float(num_experts), 1.0)
+        # v1: 条件计算能耗（真实 MoE synops 对比密集前向）
+        num_experts = len(self.experts.experts)
+        synops_masked = float(synops.sum())
+        per_expert_cost = float(hidden.numel() * hidden.numel())
+        synops_dense = per_expert_cost * num_experts
+        moe_energy_ratio = synops_masked / max(synops_dense, 1.0)
 
         return {
             "spikes": spikes,
