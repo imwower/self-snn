@@ -1,6 +1,7 @@
 import argparse
 from pathlib import Path
 
+import numpy as np
 import torch
 import yaml
 from torch.utils.tensorboard import SummaryWriter
@@ -18,7 +19,8 @@ from self_snn.agency.intention import IntentionConfig
 from self_snn.agency.commit import CommitConfig
 from self_snn.agency.act import ActConfig
 from self_snn.agency.consistency import ConsistencyConfig
-from self_snn.utils.logging_cn import setup_logger, log_pacemaker, log_self
+from self_snn.utils.encoders import encode_text, encode_image, encode_video
+from self_snn.utils.logging_cn import setup_logger, log_pacemaker, log_self, log_memory_read
 
 
 def load_config(path: str | Path) -> dict:
@@ -133,6 +135,129 @@ def build_self_snn_config(cfg: dict) -> SelfSNNConfig:
     )
 
 
+@torch.no_grad()
+def compute_task_metrics(
+    model: SelfSNN,
+    task: str,
+    writer: SummaryWriter,
+    logger,
+    epoch: int,
+    steps_eval: int = 30,
+    data_root: str = "data/toy",
+) -> None:
+    """
+    基于 toy 数据集计算任务级指标（命中率/成功率），并写入 TensorBoard 与中文日志。
+    """
+    device = next(model.parameters()).device
+    data_root_path = Path(data_root)
+
+    if task == "words_images":
+        path = data_root_path / "words_images.npz"
+        if not path.exists():
+            logger.warning(f"words_images toy data not found at {path}")
+            return
+        npz = np.load(path, allow_pickle=True)
+        words = npz["words"]
+        images = npz["images"]
+        n = len(words)
+
+        text_feats = []
+        img_feats = []
+        for i in range(n):
+            tokens = [str(words[i])]
+            text_vec = encode_text(tokens, dim=128)
+            img_tensor = torch.from_numpy(images[i])
+            img_vec = encode_image(img_tensor, dim=128)
+
+            drive_text = text_vec.unsqueeze(0).repeat(steps_eval, 1).to(device)
+            drive_img = img_vec.unsqueeze(0).repeat(steps_eval, 1).to(device)
+
+            out_text = model({"drive": drive_text}, steps=steps_eval)
+            out_img = model({"drive": drive_img}, steps=steps_eval)
+            text_feats.append(out_text["prediction"].detach().cpu())
+            img_feats.append(out_img["prediction"].detach().cpu())
+
+        text_mat = torch.stack(text_feats, dim=0)
+        img_mat = torch.stack(img_feats, dim=0)
+        text_norm = torch.nn.functional.normalize(text_mat, dim=1)
+        img_norm = torch.nn.functional.normalize(img_mat, dim=1)
+        sim = text_norm @ img_norm.T
+        pred_idx = sim.argmax(dim=1)
+        hits = (pred_idx == torch.arange(n)).float().mean()
+        hit_rate = float(hits)
+
+        writer.add_scalar("task/s1_hit_rate", hit_rate, epoch)
+        log_memory_read(logger, f"词↔图 检索命中率={hit_rate:.3f}")
+
+    elif task == "sentences_images":
+        path = data_root_path / "sentences_images.npz"
+        if not path.exists():
+            logger.warning(f"sentences_images toy data not found at {path}")
+            return
+        npz = np.load(path, allow_pickle=True)
+        sentences = npz["sentences"]
+        images = npz["images"]
+        n = len(sentences)
+
+        text_feats = []
+        img_feats = []
+        for i in range(n):
+            # 句子直接作为一个 token 处理
+            tokens = [str(sentences[i])]
+            text_vec = encode_text(tokens, dim=128)
+            img_tensor = torch.from_numpy(images[i])
+            img_vec = encode_image(img_tensor, dim=128)
+
+            drive_text = text_vec.unsqueeze(0).repeat(steps_eval, 1).to(device)
+            drive_img = img_vec.unsqueeze(0).repeat(steps_eval, 1).to(device)
+
+            out_text = model({"drive": drive_text}, steps=steps_eval)
+            out_img = model({"drive": drive_img}, steps=steps_eval)
+            text_feats.append(out_text["prediction"].detach().cpu())
+            img_feats.append(out_img["prediction"].detach().cpu())
+
+        text_mat = torch.stack(text_feats, dim=0)
+        img_mat = torch.stack(img_feats, dim=0)
+        text_norm = torch.nn.functional.normalize(text_mat, dim=1)
+        img_norm = torch.nn.functional.normalize(img_mat, dim=1)
+        sim = text_norm @ img_norm.T
+        pred_idx = sim.argmax(dim=1)
+        hits = (pred_idx == torch.arange(n)).float().mean()
+        hit_rate = float(hits)
+
+        writer.add_scalar("task/s2_hit_rate", hit_rate, epoch)
+        log_memory_read(logger, f"句↔图 检索命中率={hit_rate:.3f}")
+
+    elif task == "video_events":
+        path = data_root_path / "video_events.npz"
+        if not path.exists():
+            logger.warning(f"video_events toy data not found at {path}")
+            return
+        npz = np.load(path, allow_pickle=True)
+        videos = npz["videos"]  # [N, T, 1, 16, 16]
+        labels = npz["labels"]
+        n = len(labels)
+
+        vid_feats = []
+        for i in range(n):
+            frames = torch.from_numpy(videos[i])
+            vid_vec = encode_video(frames, dim=128)
+            drive_vid = vid_vec.unsqueeze(0).repeat(steps_eval, 1).to(device)
+            out_vid = model({"drive": drive_vid}, steps=steps_eval)
+            vid_feats.append(out_vid["prediction"].detach().cpu())
+
+        vid_mat = torch.stack(vid_feats, dim=0)
+        vid_norm = torch.nn.functional.normalize(vid_mat, dim=1)
+        sim = vid_norm @ vid_norm.T
+        pred_idx = sim.argmax(dim=1)
+        hits = (pred_idx == torch.arange(n)).float().mean()
+        hit_rate = float(hits)
+
+        writer.add_scalar("task/s3_self_retrieval", hit_rate, epoch)
+        log_memory_read(logger, f"视频事件自检索命中率={hit_rate:.3f}")
+
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
@@ -228,6 +353,17 @@ def main() -> None:
                 if p.grad is not None:
                     p.data -= 1e-4 * p.grad
                     p.grad.zero_()
+            # 任务级指标（S1/S2/S3）
+            if task in ("words_images", "sentences_images", "video_events"):
+                compute_task_metrics(
+                    model=model,
+                    task=task,
+                    writer=writer,
+                    logger=logger,
+                    epoch=epoch,
+                    steps_eval=min(30, duration),
+                    data_root="data/toy",
+                )
     finally:
         writer.close()
 
