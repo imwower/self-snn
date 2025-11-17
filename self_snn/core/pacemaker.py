@@ -116,8 +116,9 @@ class Pacemaker(torch.nn.Module):
 
             spikes_list.append(s)
             vm_trace_list.append(vm.clone())
-            theta_phase_list.append(torch.tensor(theta_phase, device=self.device))
-            gamma_phase_list.append(torch.tensor(gamma_phase, device=self.device))
+            # 直接使用已在正确设备上的张量，避免重复构造导致的警告
+            theta_phase_list.append(theta_phase.detach().clone())
+            gamma_phase_list.append(gamma_phase.detach().clone())
             spike_counts.append(s.sum())
 
         spikes = torch.stack(spikes_list, dim=0)  # [T, N]
