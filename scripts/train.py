@@ -319,6 +319,9 @@ def main() -> None:
             # 与 README 中命名保持一致的标量
             writer.add_scalar("r_int", r_int, epoch)
             writer.add_scalar("r_ext", r_ext, epoch)
+            # 自我置信与不确定性（来自 Meta 内省 EMA）
+            writer.add_scalar("self/confidence", float(meta["confidence"]), epoch)
+            writer.add_scalar("self/uncert", float(meta["uncertainty"]), epoch)
 
             # 点火 & 分支系数
             ignition_rate = float(out["ignition_rate"])
