@@ -301,7 +301,13 @@ def main() -> None:
             out = model(steps=duration)
 
             # 文本日志
-            log_pacemaker(logger, "θ/γ 节律=..., 噪声σ=... 已启动")
+            pmc_cfg = model_cfg.pmc
+            target_rate = float(model.pacemaker.target_rate)
+            log_pacemaker(
+                logger,
+                f"θ/γ 节律=({pmc_cfg.theta_hz:.1f}Hz/{pmc_cfg.gamma_hz:.1f}Hz), "
+                f"目标发放={target_rate:.2f}Hz",
+            )
             log_self(logger, model.self_model.report())
 
             # 基本 loss（预测误差 L1）与世界模型误差 L2
@@ -326,8 +332,11 @@ def main() -> None:
             # 点火 & 分支系数
             ignition_rate = float(out["ignition_rate"])
             branching_kappa = float(out["branching_kappa"])
+            ignite_cov = out.get("ignite_coverage")
+            ignite_cov_mean = float(ignite_cov.mean()) if ignite_cov is not None else 0.0
             writer.add_scalar("mcc/ignition_rate", ignition_rate, epoch)
             writer.add_scalar("mcc/branching_kappa", branching_kappa, epoch)
+            writer.add_scalar("mcc/ignite_coverage", ignite_cov_mean, epoch)
             writer.add_scalar("ignition_rate", ignition_rate, epoch)
             writer.add_scalar("branching_kappa", branching_kappa, epoch)
 
@@ -390,7 +399,7 @@ def main() -> None:
             # ---- 中文关键节点汇总日志（按模板） ----
             log_ignition(
                 logger,
-                f"窗口内跨模块同步提升，已广播；点火率={ignition_rate:.3f}，κ={branching_kappa:.3f}",
+                f"窗口内跨模块同步提升，已广播；点火率={ignition_rate:.3f}，覆盖度={ignite_cov_mean:.3f}，κ={branching_kappa:.3f}",
             )
             log_router(
                 logger,

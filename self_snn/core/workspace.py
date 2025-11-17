@@ -189,6 +189,11 @@ class SelfSNN(nn.Module):
         # 将 WM 状态映射到 MoE / 世界模型隐藏空间
         hidden = self.wm_to_hidden(wm_state.unsqueeze(0)).squeeze(0)
 
+        # GW 广播门控：根据点火覆盖度轻微调制隐藏状态强度
+        if ignite_coverage.numel() > 0:
+            gw_gate = torch.clamp(ignite_coverage.mean(), 0.0, 1.0)
+            hidden = hidden * (0.5 + 0.5 * gw_gate)
+
         # GW-MoE: 条件专家选择
         gw_mask, router_stats = self.router(hidden)
         # 条件计算：仅对被选中的专家执行前向

@@ -18,6 +18,8 @@ def main() -> None:
     rate = float(spikes.float().mean() * 1000.0)
     ignition_rate = float(out["ignition_rate"])
     kappa = float(out["branching_kappa"])
+    ignite_cov = out.get("ignite_coverage")
+    ignite_cov_mean = float(ignite_cov.mean()) if ignite_cov is not None else 0.0
 
     figs_dir = Path(args.logdir) / "figs"
     figs_dir.mkdir(parents=True, exist_ok=True)
@@ -33,7 +35,7 @@ def main() -> None:
 
     print(
         f"Ignition eval: mean_rate={rate:.3f} Hz, "
-        f"ignition_rate={ignition_rate:.3f}, branching_kappa={kappa:.3f}, "
+        f"ignition_rate={ignition_rate:.3f}, coverage={ignite_cov_mean:.3f}, branching_kappa={kappa:.3f}, "
         f"figs saved to {figs_dir}"
     )
 
