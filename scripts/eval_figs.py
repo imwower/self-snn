@@ -4,7 +4,7 @@ from pathlib import Path
 import torch
 
 from self_snn.core.workspace import SelfSNN, SelfSNNConfig
-from self_snn.utils.viz import save_curve, save_heatmap
+from self_snn.utils.viz import save_curve, save_heatmap, save_intent_utility_with_components
 
 
 def main() -> None:
@@ -55,8 +55,20 @@ def main() -> None:
     save_curve(energy_curve, outdir / "energy_curve.png", ylabel="energy", title="Energy Curve")
     # 自我信用分
     save_curve(self_credit, outdir / "self_credit.png", ylabel="self_credit", title="Self Credit")
-    # 意图效用
-    save_curve(best_utils, outdir / "intent_utility.png", ylabel="best U(g)", title="Intent Utility")
+    # 意图效用：曲线 + 分项条形图
+    # 使用最后一次前向的最佳目标进行效用分解
+    last_goals = out["goals"]
+    last_utils = out["utilities"]
+    if last_utils.numel() > 0 and len(last_goals) > 0:
+        best_idx = int(last_utils.argmax())
+        g_best = last_goals[best_idx]
+        components = model.intention.explain_utility(
+            g_best,
+            model.pred,
+            model.imagination,
+            model.self_model.key.float(),
+        )
+        save_intent_utility_with_components(best_utils, components, outdir / "intent_utility.png")
     # 承诺率曲线
     save_curve(commit_flags, outdir / "commit_rate_curve.png", ylabel="commit(0/1)", title="Commit Rate Curve")
     # 简单 agency 时间线（这里用 self_credit 代表）
@@ -69,4 +81,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

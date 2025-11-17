@@ -17,6 +17,7 @@ class PredictiveCoderConfig:
     """
 
     hidden_dim: int = 128
+    use_surrogate: bool = False
 
 
 class PredictiveCoder(nn.Module):
@@ -56,6 +57,13 @@ class PredictiveCoder(nn.Module):
     def forward(self, z: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         单步预测编码：z_t -> (x̂_{t+1}, ε_{t+1}).
+
+        返回值
+        ------
+        pred:
+            对 z_t 的预测 x̂_{t+1}。
+        err:
+            预测误差 ε_{t+1} = x̂_{t+1} - z_t。
         """
         z_vec = self._prepare_input(z)
         h_prev = self.hidden
@@ -64,6 +72,28 @@ class PredictiveCoder(nn.Module):
         pred = h_new
         err = pred - z_vec
         return pred, err
+
+    def loss_terms(self, z: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """
+        计算预测编码的损失项，便于训练与评测。
+
+        Parameters
+        ----------
+        z:
+            当前时间步的输入向量。
+
+        Returns
+        -------
+        dict:
+            - loss: 主损失（L2 误差）
+            - l1:   L1 误差
+            - l2:   L2 误差
+        """
+        pred, err = self.forward(z)
+        l2 = (err**2).mean()
+        l1 = err.abs().mean()
+        loss = l2
+        return {"loss": loss, "l1": l1, "l2": l2}
 
     @torch.no_grad()
     def rollout(self, z: torch.Tensor, horizon: int) -> Dict[str, torch.Tensor]:

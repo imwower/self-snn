@@ -88,6 +88,50 @@ class IntentionModule:
             - self.config.c_boredom * boredom
         )
 
+    def explain_utility(
+        self,
+        g: torch.Tensor,
+        pred: PredictiveCoder,
+        imagination: Optional[ImaginationEngine],
+        self_key: torch.Tensor,
+    ) -> dict:
+        """
+        对单个候选目标 g 的效用进行分解，返回各组成项及总 U(g)。
+        """
+        _, err = pred(g)
+        lp_hat = -err.pow(2).mean()
+        empower_hat = g[1].abs()
+        r_ext_hat = g[2]
+
+        if imagination is not None:
+            h0 = self_key[: pred.config.hidden_dim].float()
+            feats = imagination.estimate_utility_terms(g, h0)
+            energy = torch.tensor(feats["energy"])
+            risk = torch.tensor(feats["risk"])
+            boredom = torch.tensor(feats["boredom"])
+        else:
+            energy = g[3].abs()
+            risk = g[4].abs()
+            boredom = g[5].abs()
+
+        u = (
+            self.config.w_lp * lp_hat
+            + self.config.w_empower * empower_hat
+            + self.config.w_reward * r_ext_hat
+            - self.config.c_energy * energy
+            - self.config.c_risk * risk
+            - self.config.c_boredom * boredom
+        )
+        return {
+            "U": u.detach(),
+            "LP_hat": lp_hat.detach(),
+            "Empower_hat": empower_hat.detach(),
+            "R_ext_hat": r_ext_hat.detach(),
+            "Energy": energy.detach(),
+            "Risk": risk.detach(),
+            "Boredom": boredom.detach(),
+        }
+
     def __call__(
         self,
         memory: DelayMemory,
