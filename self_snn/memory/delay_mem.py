@@ -1,13 +1,30 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional, Tuple as Tup
 
 import torch
 
 
 @dataclass
 class DelayMemoryConfig:
+    """
+    延迟记忆（D-MEM）配置。
+
+    Parameters
+    ----------
+    dmax:
+        最大延迟窗口长度（以时间步计），同时也是环形缓冲长度上界。
+    dt_ms:
+        时间步长（ms），用于将步数转换为物理时间。
+    eta_d:
+        延迟可塑性学习率（HDP 中第三因子缩放系数）。
+    delta_step:
+        单步延迟更新的最大步长，保证 Δd ∈ {-delta_step, 0, +delta_step}。
+    delay_entropy_reg:
+        延迟分布的熵正则系数（当前实现中作为占位，便于后续引入）。
+    """
+
     dmax: int = 120
     dt_ms: float = 1.0
     eta_d: float = 0.1
@@ -17,11 +34,20 @@ class DelayMemoryConfig:
 
 class DelayMemory:
     """
-    延迟记忆模块（D-MEM）：
-    - 对每个键存储若干时序片段 sequence（通常为 WM 或 feature 轨迹）
-    - 为该键维护一个可塑的整数延迟 d \in [0, dmax]
-    - 提供 write/read/replay/consolidate API
-    - 提供基于 spike 自相关的简化 HDP 更新：update_delay_from_spikes
+    延迟记忆模块（D-MEM）。
+
+    - 对每个键存储若干时序片段（通常为工作记忆或世界模型隐状态轨迹）。
+    - 为该键维护一个可塑的整数延迟 d ∈ [0, dmax]。
+    - 使用事件级环形缓冲与 `scatter_add_` 实现重放。
+    - 提供基于 pre spike 自相关与第三因子（RPE/Surprise/Empowerment 等）的
+      简化 HDP 更新：`update_delay_from_spikes`。
+
+    Notes
+    -----
+    - 为兼容 tests 与现有脚本：
+      - `read(key)` 返回紧凑表征向量（时间与写入次数双均值）。
+      - `replay(key)` 返回按当前 d 重放后的时序张量。
+    - 额外提供 `read_with_timing_error(key, max_len)` 接口，用于评估重放时间误差。
     """
 
     def __init__(self, config: DelayMemoryConfig) -> None:
@@ -33,20 +59,30 @@ class DelayMemory:
     def _key_to_tuple(key: torch.Tensor) -> Tuple[int, ...]:
         return tuple((key.detach().cpu().flatten() > 0).int().tolist())
 
-    def write(self, key: torch.Tensor, sequence: torch.Tensor, delay: int | None = None) -> None:
+    def write(self, key: torch.Tensor, sequence: torch.Tensor, delay: Optional[int] = None) -> None:
         """
         追加写入一个时序序列到给定键。
-        可选地显式指定 delay（例如在有监督设置下已知真实延迟）。
+
+        Parameters
+        ----------
+        key:
+            键张量（将被二值化为 tuple，作为索引）。
+        sequence:
+            形状为 [T, ...] 的时序张量。
+        delay:
+            可选的显式延迟标签（例如有监督设定中已知真实延迟）。
         """
         tkey = self._key_to_tuple(key)
         self._storage.setdefault(tkey, []).append(sequence.detach().clone())
         if delay is not None:
             self._delays[tkey] = int(max(0, min(self.config.dmax, delay)))
 
-    def read(self, key: torch.Tensor) -> torch.Tensor | None:
+    def read(self, key: torch.Tensor) -> Optional[torch.Tensor]:
         """
         读取该键下所有序列在时间与样本维度上的平均值，
         作为“巩固后”的紧凑表征向量。
+
+        兼容 tests/test_delay_mem.py 对 `read(key)` 的使用。
         """
         tkey = self._key_to_tuple(key)
         seqs = self._storage.get(tkey)
@@ -56,38 +92,26 @@ class DelayMemory:
         # 对 n_seq 与 T 两个维度求均值，返回形状为特征维度的向量
         return stacked.mean(dim=(0, 1))
 
-    def replay(self, key: torch.Tensor) -> torch.Tensor | None:
+    def _build_replay_buffer(self, tkey: Tuple[int, ...]) -> Optional[torch.Tensor]:
         """
-        按当前估计的延迟 d 进行重放。
-
-        为了贴近“事件级环形缓冲 + scatter_add_”语义，这里在调用时构造一个长度 <= dmax
-        的缓冲区 buffer，并将原始序列按 (t + d) 的时间索引散射累加：
-
-            buffer[t + d] += seq[t]
-
-        这样既保持了 DelayMemory 在本项目中的简化接口，又能在需要时反映“离散延迟链”的效果。
+        内部工具：根据当前延迟构造环形缓冲重放结果。
         """
-        tkey = self._key_to_tuple(key)
         seqs = self._storage.get(tkey)
         if not seqs:
             return None
-        # 对同一键的多条写入在样本维度求平均，保留时间维度
         seq = torch.stack(seqs, dim=0).mean(dim=0)  # [T, ...]
 
         delay = int(self._delays.get(tkey, 0))
         dmax = int(self.config.dmax)
 
-        # 原始序列长度
         T = int(seq.shape[0])
         if T <= 0:
             return None
 
-        # 输出长度：最多到 dmax，避免越界
         out_len = min(T + max(delay, 0), dmax)
         device = seq.device
         buf = torch.zeros(out_len, *seq.shape[1:], dtype=seq.dtype, device=device)
 
-        # 目标时间索引 t + d，并裁剪到 [0, out_len)
         t_idx = torch.arange(T, device=device)
         dst = t_idx + max(delay, 0)
         valid = dst < out_len
@@ -96,9 +120,47 @@ class DelayMemory:
         dst = dst[valid]
         src = seq[t_idx[valid]]
 
-        # scatter_add_ / index_add_ 形式的事件级写入
         buf.index_add_(0, dst, src)
         return buf
+
+    def replay(self, key: torch.Tensor) -> Optional[torch.Tensor]:
+        """
+        按当前估计的延迟 d 进行重放，返回时序张量。
+
+        兼容 tests/test_delay_mem.py 对 `replay(key)` 的使用。
+        """
+        tkey = self._key_to_tuple(key)
+        return self._build_replay_buffer(tkey)
+
+    def read_with_timing_error(
+        self, key: torch.Tensor, max_len: Optional[int] = None
+    ) -> Tup[Optional[torch.Tensor], float]:
+        """
+        读取并重放，同时估计“时间重放误差”。
+
+        当前实现中，误差以“估计延迟与当前延迟的差值”近似：
+
+            err_ms ≈ |d_est - d_cur| * dt_ms
+
+        后续可替换为基于 pre/post spike 对齐的 RMS 误差。
+        """
+        tkey = self._key_to_tuple(key)
+        replayed = self._build_replay_buffer(tkey)
+        if replayed is None:
+            return None, 0.0
+
+        cur_d = int(self._delays.get(tkey, 0))
+        # 用自相关重新估计延迟，作为“理想值”
+        # 这里仅使用单通道总和作为 spike_counts 的近似
+        spike_counts = replayed.float().sum(dim=1)
+        d_est = self._estimate_best_delay(spike_counts)
+        err_steps = abs(d_est - cur_d)
+        err_ms = float(err_steps * self.config.dt_ms)
+
+        if max_len is not None and replayed.shape[0] > max_len:
+            replayed = replayed[:max_len]
+
+        return replayed, err_ms
 
     def consolidate(self) -> None:
         """
@@ -142,8 +204,14 @@ class DelayMemory:
         """
         简化 HDP：基于 pre spike 自相关与第三因子（如 RPE/置信度）更新离散延迟。
 
-        - spike_counts: shape [T]，为某一键相关联的 pre spike 总和轨迹
-        - third_factor: 第三因子，范围大致 [-1, 1]，决定更新方向与步长
+        Parameters
+        ----------
+        key:
+            与特定记忆槽关联的键。
+        spike_counts:
+            形状为 [T] 的张量，为该键相关联的 pre spike 总和轨迹。
+        third_factor:
+            第三因子，范围大致 [-1, 1]，决定更新方向与步长。
         """
         if spike_counts.numel() <= 1:
             return

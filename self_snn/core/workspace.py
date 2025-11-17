@@ -12,6 +12,7 @@ from .wm import WorkingMemory, WorkingMemoryConfig
 from .introspect import MetaIntrospector, MetaConfig
 from ..memory.delay_mem import DelayMemory, DelayMemoryConfig
 from ..worldmodel.pred_code import PredictiveCoder, PredictiveCoderConfig
+from ..worldmodel.imagination import ImaginationEngine, ImaginationConfig
 from ..router.router import GWRouter, RouterConfig
 from ..router.experts import MaskedExperts, ExpertsConfig
 from ..agency.self_model import SelfModel, SelfModelConfig
@@ -116,6 +117,7 @@ class SelfSNNConfig:
     meta: MetaConfig = field(default_factory=MetaConfig)
     delay: DelayMemoryConfig = field(default_factory=DelayMemoryConfig)
     pred: PredictiveCoderConfig = field(default_factory=PredictiveCoderConfig)
+    imagination: ImaginationConfig = field(default_factory=ImaginationConfig)
     router: RouterConfig = field(default_factory=RouterConfig)
     experts: ExpertsConfig = field(default_factory=ExpertsConfig)
     self_model: SelfModelConfig = field(default_factory=SelfModelConfig)
@@ -138,6 +140,7 @@ class SelfSNN(nn.Module):
         self.meta = MetaIntrospector(config.meta)
         self.memory = DelayMemory(config.delay)
         self.pred = PredictiveCoder(config.pred)
+        self.imagination = ImaginationEngine(config.imagination)
         self.router = GWRouter(config.router)
 
         # 将 WM 状态映射到 MoE / 世界模型的隐空间
@@ -203,7 +206,7 @@ class SelfSNN(nn.Module):
         self.memory.update_delay_from_spikes(self.self_model.key, spike_counts, third_factor=third_factor)
         self.memory.write(key=self.self_model.key, sequence=wm_state)
 
-        goals, utilities = self.intention(self.memory, self.pred, self.self_model)
+        goals, utilities = self.intention(self.memory, self.pred, self.self_model, self.imagination)
         commit_state = self.commit(goals, utilities, meta, self.self_model)
         act_out = self.act(commit_state, wm_state, gw_mask)
         credit = self.consistency(commit_state, act_out)

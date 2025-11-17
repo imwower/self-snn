@@ -42,5 +42,6 @@ class GWRouter(nn.Module):
             "probs": probs.detach(),
             "balance_loss": balance_loss,
             "topk": topk_idx.detach(),
+            "usage_ema": self.usage_ema.detach(),
         }
         return mask, stats
