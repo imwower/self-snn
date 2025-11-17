@@ -58,3 +58,6 @@ def log_self_do(logger: logging.Logger, msg: str) -> None:
 def log_energy(logger: logging.Logger, msg: str) -> None:
     logger.info(f"【节能】{msg}")
 
+
+def log_consistency(logger: logging.Logger, msg: str) -> None:
+    logger.info(f"【自洽】{msg}")

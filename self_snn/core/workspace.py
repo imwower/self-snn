@@ -211,6 +211,7 @@ class SelfSNN(nn.Module):
         commit_state = self.commit(goals, utilities, meta, self.self_model)
         act_out = self.act(commit_state, wm_state, gw_mask)
         credit = self.consistency(commit_state, act_out)
+        consistency_stats = self.consistency.stats()
 
         self.self_model.update_state(meta, act_out)
 
@@ -251,6 +252,7 @@ class SelfSNN(nn.Module):
             "commit_state": commit_state,
             "act_out": act_out,
             "self_credit": credit,
+            "consistency_stats": consistency_stats,
             "ignition_rate": ignition_rate,
             "branching_kappa": branching_kappa,
             "moe_energy_ratio": moe_energy_ratio,

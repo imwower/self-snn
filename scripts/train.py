@@ -380,8 +380,12 @@ def main() -> None:
             committed = 1.0 if commit_state.get("committed", False) else 0.0
             writer.add_scalar("agency/commit_rate_curve", committed, epoch)
 
-            # 自我信用分
+            # 自我信用分与自洽指标（Brier/ECE）
             writer.add_scalar("self/credit", float(out["self_credit"]), epoch)
+            consistency_stats = out.get("consistency_stats")
+            if consistency_stats is not None:
+                writer.add_scalar("self/brier", float(consistency_stats["brier"]), epoch)
+                writer.add_scalar("self/ece", float(consistency_stats["ece"]), epoch)
 
             # ---- 中文关键节点汇总日志（按模板） ----
             log_ignition(
