@@ -45,27 +45,60 @@ class DelayMemory:
 
     def read(self, key: torch.Tensor) -> torch.Tensor | None:
         """
-        读取该键下所有序列的平均值，作为“巩固后”表征。
+        读取该键下所有序列在时间与样本维度上的平均值，
+        作为“巩固后”的紧凑表征向量。
         """
         tkey = self._key_to_tuple(key)
         seqs = self._storage.get(tkey)
         if not seqs:
             return None
-        stacked = torch.stack(seqs, dim=0)
-        return stacked.mean(dim=0)
+        stacked = torch.stack(seqs, dim=0)  # [n_seq, T, ...]
+        # 对 n_seq 与 T 两个维度求均值，返回形状为特征维度的向量
+        return stacked.mean(dim=(0, 1))
 
     def replay(self, key: torch.Tensor) -> torch.Tensor | None:
         """
-        按当前估计的延迟 d 进行重放：在时间前部填充 d 步空白。
+        按当前估计的延迟 d 进行重放。
+
+        为了贴近“事件级环形缓冲 + scatter_add_”语义，这里在调用时构造一个长度 <= dmax
+        的缓冲区 buffer，并将原始序列按 (t + d) 的时间索引散射累加：
+
+            buffer[t + d] += seq[t]
+
+        这样既保持了 DelayMemory 在本项目中的简化接口，又能在需要时反映“离散延迟链”的效果。
         """
-        seq = self.read(key)
-        if seq is None:
+        tkey = self._key_to_tuple(key)
+        seqs = self._storage.get(tkey)
+        if not seqs:
             return None
-        delay = self._delays.get(self._key_to_tuple(key), 0)
-        if delay <= 0:
-            return seq
-        pad = torch.zeros(delay, *seq.shape[1:], dtype=seq.dtype, device=seq.device)
-        return torch.cat([pad, seq], dim=0)[: self.config.dmax]
+        # 对同一键的多条写入在样本维度求平均，保留时间维度
+        seq = torch.stack(seqs, dim=0).mean(dim=0)  # [T, ...]
+
+        delay = int(self._delays.get(tkey, 0))
+        dmax = int(self.config.dmax)
+
+        # 原始序列长度
+        T = int(seq.shape[0])
+        if T <= 0:
+            return None
+
+        # 输出长度：最多到 dmax，避免越界
+        out_len = min(T + max(delay, 0), dmax)
+        device = seq.device
+        buf = torch.zeros(out_len, *seq.shape[1:], dtype=seq.dtype, device=device)
+
+        # 目标时间索引 t + d，并裁剪到 [0, out_len)
+        t_idx = torch.arange(T, device=device)
+        dst = t_idx + max(delay, 0)
+        valid = dst < out_len
+        if not torch.any(valid):
+            return buf
+        dst = dst[valid]
+        src = seq[t_idx[valid]]
+
+        # scatter_add_ / index_add_ 形式的事件级写入
+        buf.index_add_(0, dst, src)
+        return buf
 
     def consolidate(self) -> None:
         """
@@ -116,23 +149,20 @@ class DelayMemory:
             return
 
         tkey = self._key_to_tuple(key)
-        cur_d = self._delays.get(tkey, 0)
+        cur_d = int(self._delays.get(tkey, 0))
 
         target_d = self._estimate_best_delay(spike_counts)
 
-        # HDP 更新步长：朝着 target_d 以 delta_step 为单位移动，受第三因子缩放
-        delta = target_d - cur_d
-        if delta == 0:
+        # HDP 更新：朝着 target_d 以单步 ±delta_step 变化，满足 Δd ∈ {-1, 0, +1}·delta_step
+        delta = int(target_d - cur_d)
+        # 第三因子过小或目标已对齐时，不更新
+        if delta == 0 or abs(third_factor) < 1e-3:
             self._delays[tkey] = int(max(0, min(self.config.dmax, cur_d)))
             return
 
         direction = 1 if delta > 0 else -1
-        step = direction * self.config.delta_step * float(third_factor)
+        step = direction * int(self.config.delta_step)
 
-        # 将第三因子缩放后取整，至少走一步
-        if step == 0:
-            step = direction * self.config.delta_step
-
-        new_d = int(cur_d + step)
-        new_d = max(0, min(self.config.dmax, new_d))
-        self._delays[tkey] = new_d
+        new_d = cur_d + step
+        new_d = max(0, min(int(self.config.dmax), new_d))
+        self._delays[tkey] = int(new_d)
