@@ -5,6 +5,8 @@ from typing import Dict, List, Tuple, Optional, Tuple as Tup
 
 import torch
 
+from ..meta.plasticity import STDPConfig, STDPState, stdp_3factor
+
 
 @dataclass
 class DelayMemoryConfig:
@@ -54,6 +56,9 @@ class DelayMemory:
         self.config = config
         self._storage: Dict[Tuple[int, ...], List[torch.Tensor]] = {}
         self._delays: Dict[Tuple[int, ...], int] = {}
+        # STDP 权重与资格迹状态（按键存储）
+        self._weights: Dict[Tuple[int, ...], torch.Tensor] = {}
+        self._stdp_states: Dict[Tuple[int, ...], STDPState] = {}
 
     @staticmethod
     def _key_to_tuple(key: torch.Tensor) -> Tuple[int, ...]:
@@ -177,6 +182,8 @@ class DelayMemory:
         tkey = self._key_to_tuple(key)
         self._storage.pop(tkey, None)
         self._delays.pop(tkey, None)
+        self._weights.pop(tkey, None)
+        self._stdp_states.pop(tkey, None)
 
     # ---- HDP 风格延迟可塑性（简化版） ----
 
@@ -234,3 +241,72 @@ class DelayMemory:
         new_d = cur_d + step
         new_d = max(0, min(int(self.config.dmax), new_d))
         self._delays[tkey] = int(new_d)
+
+    # ---- STDP × 第三因子权重更新（可选） ----
+
+    def update_weights(
+        self,
+        key: torch.Tensor,
+        pre: torch.Tensor,
+        post: torch.Tensor,
+        stdp_config: STDPConfig,
+        third_factor: float | torch.Tensor,
+        dt: float = 1.0,
+    ) -> None:
+        """
+        对给定键的“记忆权重”执行三因子 STDP 更新。
+
+        Notes
+        -----
+        - 当前实现中，该权重矩阵尚未进入前向路径，仅作为 D-MEM 的占位可塑性接口。
+        - 训练循环可在需要时显式调用此函数，将延迟记忆与 STDP 资格迹/第三因子真正耦合。
+        """
+        tkey = self._key_to_tuple(key)
+        pre = pre.detach().flatten()
+        post = post.detach().flatten()
+
+        if tkey not in self._weights:
+            self._weights[tkey] = torch.zeros(
+                pre.numel(),
+                post.numel(),
+                dtype=pre.dtype,
+                device=pre.device,
+            )
+            self._stdp_states[tkey] = STDPState(
+                pre_trace=torch.zeros_like(pre),
+                post_trace=torch.zeros_like(post),
+            )
+
+        w = self._weights[tkey]
+        state = self._stdp_states[tkey]
+        new_w, new_state = stdp_3factor(
+            w,
+            pre_spikes=pre,
+            post_spikes=post,
+            state=state,
+            config=stdp_config,
+            third_factor=third_factor,
+            dt=dt,
+        )
+        self._weights[tkey] = new_w
+        self._stdp_states[tkey] = new_state
+
+    def delay_of(self, key: torch.Tensor) -> int:
+        """
+        返回给定键当前估计的整数延迟 d。
+        """
+        tkey = self._key_to_tuple(key)
+        return int(self._delays.get(tkey, 0))
+
+    def stats(self) -> Dict[str, float]:
+        """
+        返回全局延迟统计信息，便于监控或可视化。
+        """
+        if not self._delays:
+            return {"n_keys": 0.0, "mean_delay": 0.0, "var_delay": 0.0}
+        delays = torch.tensor(list(self._delays.values()), dtype=torch.float32)
+        return {
+            "n_keys": float(len(self._delays)),
+            "mean_delay": float(delays.mean()),
+            "var_delay": float(delays.var(unbiased=False)),
+        }
