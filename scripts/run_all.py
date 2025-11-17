@@ -94,6 +94,19 @@ def run_s1(base_logdir: Path, duration: int, epochs_fig: int, steps_fig: int) ->
             str(steps_fig),
         ]
     )
+    # 自洽评估：信用分/Brier/ECE 与承诺收益
+    sh(
+        [
+            sys.executable,
+            "scripts/eval_self_consistency.py",
+            "--logdir",
+            str(logdir),
+            "--epochs",
+            "50",
+            "--steps",
+            "50",
+        ]
+    )
 
 
 def run_s2(base_logdir: Path, duration: int, epochs_fig: int, steps_fig: int) -> None:
@@ -242,4 +255,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
