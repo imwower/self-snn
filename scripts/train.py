@@ -134,6 +134,8 @@ def build_self_snn_config(cfg: dict) -> SelfSNNConfig:
         dt_ms=dt_ms,
         pmc=pmc,
         salience=sal,
+        # gw 使用默认 GlobalWorkspaceConfig（字段在 SelfSNNConfig 中定义），
+        # 当前从 YAML 中读取的是 mcc.gw（若存在）则在未来版本中可绑定。
         wm=wm,
         meta=meta,
         delay=delay,

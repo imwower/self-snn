@@ -22,12 +22,96 @@ from ..agency.consistency import ConsistencyModule, ConsistencyConfig
 
 
 @dataclass
+class GlobalWorkspaceConfig:
+    """
+    Global Workspace（GW）配置。
+
+    Attributes
+    ----------
+    hubs:
+        GW 中的“汇聚节点”数量（通常与皮层热点类似数量级）。
+    ignite_thr:
+        NMDA 慢变量的点火阈值，超过视为进入点火状态。
+    nmda_tau_ms:
+        NMDA/α 函数时间常数（ms），控制慢突触保持时间。
+    wta_inh:
+        软 k-WTA 抑制系数，越大越接近硬 WTA。
+    k_select:
+        每次点火时选取的 Top-K hub 数量。
+    """
+
+    hubs: int = 160
+    ignite_thr: float = 0.58
+    nmda_tau_ms: float = 100.0
+    wta_inh: float = 0.85
+    k_select: int = 2
+
+
+class GlobalWorkspace(nn.Module):
+    """
+    Global Workspace：软 k-WTA + NMDA 慢突触 + 点火检测与广播。
+
+    输入为起搏器的 spike 序列 [T, N]，内部维护 NMDA 风格的慢变量，
+    在每个时间步上根据 NMDA 活动选择 Top-K hub 视作点火，并给出
+    ignite_mask（[T, N]）与 coverage（每步点火覆盖度）。
+    """
+
+    def __init__(self, config: GlobalWorkspaceConfig, dt_ms: float, n_neurons: int, device: torch.device) -> None:
+        super().__init__()
+        self.config = config
+        self.dt_ms = dt_ms
+        self.n_neurons = n_neurons
+        self.device = device
+        # NMDA 风格慢突触状态
+        self.register_buffer("nmda_state", torch.zeros(n_neurons, device=device))
+
+    @torch.no_grad()
+    def forward(self, spikes: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """
+        Parameters
+        ----------
+        spikes:
+            形状 [T, N] 的二值脉冲序列。
+        """
+        assert spikes.dim() == 2, "GlobalWorkspace 期望输入形状为 [T, N]"
+        T, N = spikes.shape
+        nmda = self.nmda_state
+
+        alpha = self.dt_ms / max(self.config.nmda_tau_ms, 1.0)
+        ignite_mask = torch.zeros_like(spikes, dtype=torch.float32)
+        coverage = torch.zeros(T, device=spikes.device, dtype=torch.float32)
+
+        for t in range(T):
+            s_t = spikes[t].float()
+            # NMDA 慢突触积分
+            nmda = (1.0 - alpha) * nmda + alpha * s_t
+
+            max_nmda = nmda.max()
+            if max_nmda < self.config.ignite_thr:
+                # 未达点火阈值，不触发 GW
+                coverage[t] = 0.0
+                continue
+
+            k = min(self.config.k_select, N)
+            if k > 0:
+                # 软 k-WTA：按 NMDA 状态选 Top-K 作为点火 hub
+                scores = nmda * self.config.wta_inh
+                _, idx = torch.topk(scores, k=k)
+                ignite_mask[t, idx] = 1.0
+                coverage[t] = ignite_mask[t].mean()
+
+        self.nmda_state = nmda.detach()
+        return {"ignite_mask": ignite_mask, "coverage": coverage}
+
+
+@dataclass
 class SelfSNNConfig:
     backend_engine: str = "torch-spkj"
     device: str = "cpu"
     dt_ms: float = 1.0
     pmc: PacemakerConfig = field(default_factory=PacemakerConfig)
     salience: SalienceConfig = field(default_factory=SalienceConfig)
+    gw: GlobalWorkspaceConfig = field(default_factory=GlobalWorkspaceConfig)
     wm: WorkingMemoryConfig = field(default_factory=WorkingMemoryConfig)
     meta: MetaConfig = field(default_factory=MetaConfig)
     delay: DelayMemoryConfig = field(default_factory=DelayMemoryConfig)
@@ -49,6 +133,7 @@ class SelfSNN(nn.Module):
 
         self.pacemaker = Pacemaker(config.pmc, device=device)
         self.salience = SalienceModule(config.salience)
+        self.global_workspace = GlobalWorkspace(config.gw, dt_ms=config.dt_ms, n_neurons=config.pmc.n_neurons, device=device)
         self.workspace_wm = WorkingMemory(config.wm)
         self.meta = MetaIntrospector(config.meta)
         self.memory = DelayMemory(config.delay)
@@ -76,7 +161,9 @@ class SelfSNN(nn.Module):
         inputs = inputs or {}
         ext_drive = inputs.get("drive")
 
-        spikes = self.pacemaker(T=steps).to(device)
+        # 起搏器：生成自发脉冲、膜电位与相位信息
+        pmc_out = self.pacemaker.step(steps)
+        spikes = pmc_out["spikes"].to(device)
         if ext_drive is not None:
             ext_drive = ext_drive.to(device)
             L = min(ext_drive.shape[0], spikes.shape[0])
@@ -88,6 +175,11 @@ class SelfSNN(nn.Module):
                 drive = drive[:, : spikes.shape[1]]
             drive_spikes = (drive > 0).to(spikes.dtype)
             spikes[:L] = torch.clamp(spikes[:L] + drive_spikes, 0.0, 1.0)
+
+        # Global Workspace：基于 spike 活动的软 k-WTA 点火与覆盖度
+        gw_out = self.global_workspace(spikes)
+        ignite_mask = gw_out["ignite_mask"]
+        ignite_coverage = gw_out["coverage"]
 
         wm_state = self.workspace_wm(spikes)
         # 将 WM 状态映射到 MoE / 世界模型隐藏空间
@@ -118,19 +210,18 @@ class SelfSNN(nn.Module):
 
         self.self_model.update_state(meta, act_out)
 
-        # v0: 自发 / 点火统计（简化版）
+        # v0: 自发 / 点火统计
         spikes_f = spikes.float()
         spike_counts = spikes_f.sum(dim=1)
         n_neurons = spikes.shape[1]
-        ignition_steps = spike_counts > 0.1 * float(n_neurons)
-        ignition_rate = ignition_steps.float().mean()
-        if spike_counts.numel() > 1:
-            ratio = spike_counts[1:] / torch.clamp(spike_counts[:-1], min=1.0)
-            branching_kappa = ratio.mean()
+        # 若 GW 有点火，则使用 coverage>0 的比例作为点火率；否则退回 spike 阈值判断
+        if ignite_coverage.numel() > 0 and ignite_coverage.max() > 0:
+            ignition_rate = (ignite_coverage > 0).float().mean()
         else:
-            branching_kappa = torch.tensor(1.0, device=device)
-        # 近临界调参：用 κ 在线微调起搏器目标发放率
-        self.pacemaker.adapt_to_branching(branching_kappa)
+            ignition_steps = spike_counts > 0.1 * float(n_neurons)
+            ignition_rate = ignition_steps.float().mean()
+
+        branching_kappa = pmc_out["branching_kappa"].to(device)
 
         # v1: 条件计算能耗（真实 MoE synops 对比密集前向）
         num_experts = len(self.experts.experts)
@@ -141,6 +232,11 @@ class SelfSNN(nn.Module):
 
         return {
             "spikes": spikes,
+            "vm_trace": pmc_out["vm"],
+            "theta_phase": pmc_out["theta_phase"],
+            "gamma_phase": pmc_out["gamma_phase"],
+            "ignite_mask": ignite_mask,
+            "ignite_coverage": ignite_coverage,
             "wm_state": wm_state,
             "prediction": pred,
             "prediction_error": pred_err,
