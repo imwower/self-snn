@@ -20,6 +20,7 @@ from ..agency.intention import IntentionModule, IntentionConfig
 from ..agency.commit import CommitModule, CommitConfig
 from ..agency.act import ActModule, ActConfig
 from ..agency.consistency import ConsistencyModule, ConsistencyConfig
+from ..utils.energy import compute_moe_energy
 
 
 @dataclass
@@ -228,10 +229,8 @@ class SelfSNN(nn.Module):
 
         # v1: 条件计算能耗（真实 MoE synops 对比密集前向）
         num_experts = len(self.experts.experts)
-        synops_masked = float(synops.sum())
-        per_expert_cost = float(hidden.numel() * hidden.numel())
-        synops_dense = per_expert_cost * num_experts
-        moe_energy_ratio = synops_masked / max(synops_dense, 1.0)
+        energy_stats = compute_moe_energy(hidden, synops, num_experts)
+        moe_energy_ratio = energy_stats.moe_ratio
 
         return {
             "spikes": spikes,
@@ -255,4 +254,5 @@ class SelfSNN(nn.Module):
             "ignition_rate": ignition_rate,
             "branching_kappa": branching_kappa,
             "moe_energy_ratio": moe_energy_ratio,
+            "energy_stats": energy_stats,
         }

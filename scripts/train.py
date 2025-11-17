@@ -337,6 +337,13 @@ def main() -> None:
             writer.add_scalar("spikes_per_s", spikes_per_s, epoch)
             writer.add_scalar("synops", synops_est, epoch)
 
+            # MoE 条件计算能耗（masked vs dense synops）
+            energy_stats = out.get("energy_stats")
+            if energy_stats is not None:
+                writer.add_scalar("energy/synops_masked", float(energy_stats.synops_masked), epoch)
+                writer.add_scalar("energy/synops_dense", float(energy_stats.synops_dense), epoch)
+                writer.add_scalar("energy/moe_ratio", float(energy_stats.moe_ratio), epoch)
+
             act_out = out["act_out"]
             epoch_energy = float(act_out.get("energy", 0.0))
             writer.add_scalar("energy/curve", epoch_energy, epoch)
@@ -346,6 +353,9 @@ def main() -> None:
             probs = router_stats["probs"]
             topk_idx = router_stats["topk"]
             writer.add_scalar("router/moe_energy_ratio", float(out["moe_energy_ratio"]), epoch)
+            # 负载均衡 z_loss（使用平衡损失近似）
+            z_loss_val = float(router_stats["balance_loss"])
+            writer.add_scalar("router/z_loss", z_loss_val, epoch)
             # 总体 Top-K 使用率（与 README 中 router/topk_usage 对应）
             if probs.numel() > 0:
                 topk_mean = float(probs[topk_idx].mean())
