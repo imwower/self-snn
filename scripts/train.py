@@ -304,9 +304,11 @@ def main() -> None:
             log_pacemaker(logger, "θ/γ 节律=..., 噪声σ=... 已启动")
             log_self(logger, model.self_model.report())
 
-            # 基本 loss
-            loss = out["prediction_error"].abs().mean()
+            # 基本 loss（预测误差 L1）与世界模型误差 L2
+            pred_err = out["prediction_error"]
+            loss = pred_err.abs().mean()
             writer.add_scalar("loss/train", float(loss.detach()), epoch)
+            writer.add_scalar("worldmodel/err_l2", float((pred_err.pow(2).mean()).detach()), epoch)
 
             # 奖励（这里用 confidence 近似内在奖励，占位符 0 表示外在奖励）
             meta = out["meta"]
