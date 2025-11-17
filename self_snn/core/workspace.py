@@ -129,6 +129,8 @@ class SelfSNN(nn.Module):
             branching_kappa = ratio.mean()
         else:
             branching_kappa = torch.tensor(1.0, device=device)
+        # 近临界调参：用 κ 在线微调起搏器目标发放率
+        self.pacemaker.adapt_to_branching(branching_kappa)
 
         # v1: 条件计算能耗（真实 MoE synops 对比密集前向）
         num_experts = len(self.experts.experts)

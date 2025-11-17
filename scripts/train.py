@@ -20,7 +20,18 @@ from self_snn.agency.commit import CommitConfig
 from self_snn.agency.act import ActConfig
 from self_snn.agency.consistency import ConsistencyConfig
 from self_snn.utils.encoders import encode_text, encode_image, encode_video
-from self_snn.utils.logging_cn import setup_logger, log_pacemaker, log_self, log_memory_read
+from self_snn.utils.logging_cn import (
+    setup_logger,
+    log_pacemaker,
+    log_ignition,
+    log_router,
+    log_energy,
+    log_self,
+    log_self_think,
+    log_self_want,
+    log_self_do,
+    log_memory_read,
+)
 
 
 def load_config(path: str | Path) -> dict:
@@ -86,6 +97,7 @@ def build_self_snn_config(cfg: dict) -> SelfSNNConfig:
         num_experts=experts_cfg.get("M", 16),
         k=experts_cfg.get("K", 2),
         z_loss=balance_cfg.get("z_loss", 1e-3),
+        usage_ema_tau=balance_cfg.get("usage_ema_tau", 1000),
     )
 
     self_model = SelfModelConfig(key_dim=agency_cfg.get("self_key_dim", 64))
@@ -300,10 +312,17 @@ def main() -> None:
             r_ext = 0.0
             writer.add_scalar("reward/r_int", r_int, epoch)
             writer.add_scalar("reward/r_ext", r_ext, epoch)
+            # 与 README 中命名保持一致的标量
+            writer.add_scalar("r_int", r_int, epoch)
+            writer.add_scalar("r_ext", r_ext, epoch)
 
             # 点火 & 分支系数
-            writer.add_scalar("mcc/ignition_rate", float(out["ignition_rate"]), epoch)
-            writer.add_scalar("mcc/branching_kappa", float(out["branching_kappa"]), epoch)
+            ignition_rate = float(out["ignition_rate"])
+            branching_kappa = float(out["branching_kappa"])
+            writer.add_scalar("mcc/ignition_rate", ignition_rate, epoch)
+            writer.add_scalar("mcc/branching_kappa", branching_kappa, epoch)
+            writer.add_scalar("ignition_rate", ignition_rate, epoch)
+            writer.add_scalar("branching_kappa", branching_kappa, epoch)
 
             # 发放率与 synops 估计（能耗曲线）
             spikes = out["spikes"].float()
@@ -311,6 +330,8 @@ def main() -> None:
             synops_est = float(spikes.numel())
             writer.add_scalar("energy/spikes_per_s", spikes_per_s, epoch)
             writer.add_scalar("energy/synops", synops_est, epoch)
+            writer.add_scalar("spikes_per_s", spikes_per_s, epoch)
+            writer.add_scalar("synops", synops_est, epoch)
 
             act_out = out["act_out"]
             epoch_energy = float(act_out.get("energy", 0.0))
@@ -319,7 +340,12 @@ def main() -> None:
             # Router 使用情况（Top-K 激活比例 & 概率分布）
             router_stats = out["router_stats"]
             probs = router_stats["probs"]
+            topk_idx = router_stats["topk"]
             writer.add_scalar("router/moe_energy_ratio", float(out["moe_energy_ratio"]), epoch)
+            # 总体 Top-K 使用率（与 README 中 router/topk_usage 对应）
+            if probs.numel() > 0:
+                topk_mean = float(probs[topk_idx].mean())
+                writer.add_scalar("router/topk_usage", topk_mean, epoch)
             for i, p in enumerate(probs):
                 writer.add_scalar(f"router/topk_usage/expert_{i}", float(p), epoch)
 
@@ -339,6 +365,35 @@ def main() -> None:
 
             # 自我信用分
             writer.add_scalar("self/credit", float(out["self_credit"]), epoch)
+
+            # ---- 中文关键节点汇总日志（按模板） ----
+            log_ignition(
+                logger,
+                f"窗口内跨模块同步提升，已广播；点火率={ignition_rate:.3f}，κ={branching_kappa:.3f}",
+            )
+            log_router(
+                logger,
+                f"Top-K 专家={topk_idx.tolist()}；均衡损失={float(router_stats['balance_loss']):.4e}",
+            )
+            mae = float(out["prediction_error"].abs().mean().detach())
+            log_self_think(logger, f"目标=候选集；预期LP≈{-mae:.3f} 赋能=占位")
+            if commit_state.get("committed", False):
+                log_self_want(
+                    logger,
+                    f"承诺=True；预算≈{epoch_energy:.3f}",
+                )
+            else:
+                log_self_want(logger, "承诺=False；预算=保守")
+            log_self_do(
+                logger,
+                f"规划=单步动作；efference={float(act_out.get('efference', 0.0)):.3f}",
+            )
+            moe_ratio = float(out["moe_energy_ratio"])
+            saving_pct = max(0.0, 1.0 - moe_ratio) * 100.0
+            log_energy(
+                logger,
+                f"epoch synops={synops_est:.0f}（相对密集↓ {saving_pct:.1f}%），spikes/s={spikes_per_s:.2f}",
+            )
 
             # 栅格图像（截取前 64x64，灰度图）
             t_max = min(spikes.shape[0], 64)
