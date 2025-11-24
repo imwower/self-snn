@@ -12,6 +12,7 @@ from self_snn.core.salience import SalienceConfig
 from self_snn.core.wm import WorkingMemoryConfig
 from self_snn.core.introspect import MetaConfig
 from self_snn.memory.delay_mem import DelayMemoryConfig
+from self_snn.memory.episodic_index import EpisodicIndexConfig
 from self_snn.worldmodel.pred_code import PredictiveCoderConfig
 from self_snn.router.router import RouterConfig
 from self_snn.agency.self_model import SelfModelConfig
@@ -53,6 +54,7 @@ def build_self_snn_config(cfg: dict) -> SelfSNNConfig:
     mm_cfg = mcc.get("mm", {})
 
     delay_cfg = memory.get("delay", {})
+    episodic_cfg = memory.get("episodic_index", {})
 
     experts_cfg = router_cfg.get("experts", {})
     balance_cfg = router_cfg.get("balance", {})
@@ -90,6 +92,10 @@ def build_self_snn_config(cfg: dict) -> SelfSNNConfig:
         eta_d=delay_cfg.get("eta_d", 0.1),
         delta_step=delay_cfg.get("delta_step", 1),
         delay_entropy_reg=delay_cfg.get("delay_entropy_reg", 1e-4),
+    )
+    episodic_index = EpisodicIndexConfig(
+        max_episodes=episodic_cfg.get("max_episodes", 1024),
+        ttl_steps=episodic_cfg.get("ttl_steps", None),
     )
     pred = PredictiveCoderConfig(hidden_dim=128)
 
@@ -139,6 +145,7 @@ def build_self_snn_config(cfg: dict) -> SelfSNNConfig:
         wm=wm,
         meta=meta,
         delay=delay,
+        episodic_index=episodic_index,
         pred=pred,
         router=router,
         self_model=self_model,
@@ -313,8 +320,17 @@ def main() -> None:
             # 基本 loss（预测误差 L1）与世界模型误差 L2
             pred_err = out["prediction_error"]
             loss = pred_err.abs().mean()
+
+            # D-MEM 延迟熵正则：鼓励延迟分布保持一定多样性，避免塌缩
+            mem_stats = model.memory.stats()
+            delay_entropy_reg = float(mem_stats.get("entropy_reg", 0.0))
+            delay_entropy = float(mem_stats.get("entropy", 0.0))
+            if delay_entropy_reg != 0.0:
+                loss = loss + delay_entropy_reg
+
             writer.add_scalar("loss/train", float(loss.detach()), epoch)
             writer.add_scalar("worldmodel/err_l2", float((pred_err.pow(2).mean()).detach()), epoch)
+            writer.add_scalar("memory/delay_entropy", delay_entropy, epoch)
 
             # 奖励（这里用 confidence 近似内在奖励，占位符 0 表示外在奖励）
             meta = out["meta"]

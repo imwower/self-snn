@@ -258,8 +258,9 @@ class DelayMemory:
 
         Notes
         -----
-        - 当前实现中，该权重矩阵尚未进入前向路径，仅作为 D-MEM 的占位可塑性接口。
-        - 训练循环可在需要时显式调用此函数，将延迟记忆与 STDP 资格迹/第三因子真正耦合。
+        - 该权重矩阵可由上层（如 SelfSNN）在每个时间步调用，用于将延迟记忆与
+          STDP 资格迹 / 第三因子真正耦合。
+        - 是否在读出路径中显式使用这些权重由上层决定，这里仅负责维护可塑性状态。
         """
         tkey = self._key_to_tuple(key)
         pre = pre.detach().flatten()
@@ -303,10 +304,31 @@ class DelayMemory:
         返回全局延迟统计信息，便于监控或可视化。
         """
         if not self._delays:
-            return {"n_keys": 0.0, "mean_delay": 0.0, "var_delay": 0.0}
+            return {
+                "n_keys": 0.0,
+                "mean_delay": 0.0,
+                "var_delay": 0.0,
+                "entropy": 0.0,
+                "entropy_reg": 0.0,
+            }
+
         delays = torch.tensor(list(self._delays.values()), dtype=torch.float32)
+        mean_delay = float(delays.mean())
+        var_delay = float(delays.var(unbiased=False))
+
+        # 以离散直方图近似延迟分布熵，用于延迟分布的熵正则项
+        dmax = int(self.config.dmax)
+        bins = torch.clamp(delays.long(), min=0, max=dmax)
+        hist = torch.bincount(bins, minlength=dmax + 1).float()
+        p = hist / hist.sum()
+        mask = p > 0
+        entropy = float((-p[mask] * p[mask].log()).sum().item())
+        entropy_reg = float(self.config.delay_entropy_reg * entropy)
+
         return {
             "n_keys": float(len(self._delays)),
-            "mean_delay": float(delays.mean()),
-            "var_delay": float(delays.var(unbiased=False)),
+            "mean_delay": mean_delay,
+            "var_delay": var_delay,
+            "entropy": entropy,
+            "entropy_reg": entropy_reg,
         }

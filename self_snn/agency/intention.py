@@ -145,7 +145,8 @@ class IntentionModule:
         Parameters
         ----------
         memory:
-            延迟记忆模块（当前实现未直接使用，为未来扩展预留）。
+            延迟记忆模块：用于读取与当前 Self-Key 绑定的「记忆中心」，
+            作为意图候选的基准参考。
         pred:
             世界模型的预测编码器。
         self_model:
@@ -155,11 +156,33 @@ class IntentionModule:
         """
         goals: List[torch.Tensor] = []
         utilities: List[torch.Tensor] = []
-        base = self_model.key[:6].float()
-        for _ in range(self.config.n_candidates):
+
+        # 1) 从延迟记忆中读取与当前 Self-Key 绑定的记忆表征；
+        #    若尚无记忆，则退回 Self-Key 作为基准。
+        mem_vec = memory.read(self_model.key)
+        if mem_vec is not None:
+            base = mem_vec.flatten()
+        else:
+            base = self_model.key.float()
+
+        if base.numel() < 6:
+            # 确保至少有 6 维用于各效用分量，必要时补零
+            pad = torch.zeros(6 - base.numel(), dtype=base.dtype, device=base.device)
+            base = torch.cat([base, pad], dim=0)
+        base = base[:6]
+
+        # 候选 0：记忆中心本身，代表「沿既有经验」的意图
+        g0 = base.clone()
+        u0 = self._utility(g0, pred, imagination, self_model.key.float())
+        goals.append(g0)
+        utilities.append(u0)
+
+        # 其余候选：在记忆中心附近做探索性扰动
+        for _ in range(self.config.n_candidates - 1):
             noise = 0.1 * torch.randn_like(base)
             g = base + noise
             u = self._utility(g, pred, imagination, self_model.key.float())
             goals.append(g)
             utilities.append(u)
+
         return goals, torch.stack(utilities, dim=0)

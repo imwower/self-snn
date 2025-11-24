@@ -11,6 +11,8 @@ from .salience import SalienceModule, SalienceConfig
 from .wm import WorkingMemory, WorkingMemoryConfig
 from .introspect import MetaIntrospector, MetaConfig
 from ..memory.delay_mem import DelayMemory, DelayMemoryConfig
+from ..memory.episodic_index import EpisodicIndex, EpisodicIndexConfig
+from ..meta.plasticity import STDPConfig
 from ..worldmodel.pred_code import PredictiveCoder, PredictiveCoderConfig
 from ..worldmodel.imagination import ImaginationEngine, ImaginationConfig
 from ..router.router import GWRouter, RouterConfig
@@ -117,6 +119,7 @@ class SelfSNNConfig:
     wm: WorkingMemoryConfig = field(default_factory=WorkingMemoryConfig)
     meta: MetaConfig = field(default_factory=MetaConfig)
     delay: DelayMemoryConfig = field(default_factory=DelayMemoryConfig)
+    episodic_index: EpisodicIndexConfig = field(default_factory=EpisodicIndexConfig)
     pred: PredictiveCoderConfig = field(default_factory=PredictiveCoderConfig)
     imagination: ImaginationConfig = field(default_factory=ImaginationConfig)
     router: RouterConfig = field(default_factory=RouterConfig)
@@ -140,12 +143,13 @@ class SelfSNN(nn.Module):
         self.workspace_wm = WorkingMemory(config.wm)
         self.meta = MetaIntrospector(config.meta)
         self.memory = DelayMemory(config.delay)
+        self.episodic_index = EpisodicIndex(config.episodic_index)
         self.pred = PredictiveCoder(config.pred)
         self.imagination = ImaginationEngine(config.imagination)
         self.router = GWRouter(config.router)
 
         # 将 WM 状态映射到 MoE / 世界模型的隐空间
-        self.wm_to_hidden = nn.Linear(1, config.pred.hidden_dim)
+        self.wm_to_hidden = nn.Linear(config.wm.microcolumns, config.pred.hidden_dim)
         # GW-MoE 专家网络：条件计算
         experts_cfg = ExpertsConfig(
             input_dim=config.pred.hidden_dim,
@@ -210,7 +214,22 @@ class SelfSNN(nn.Module):
         spike_counts = spikes.float().sum(dim=1)
         third_factor = float((meta["confidence"] - meta["uncertainty"]).detach())
         self.memory.update_delay_from_spikes(self.self_model.key, spike_counts, third_factor=third_factor)
+        # 将当前 WM 状态写入延迟记忆（作为单步时序片段）
         self.memory.write(key=self.self_model.key, sequence=wm_state)
+
+        # 三因子 STDP：可选地更新与当前 Self-Key 关联的 D-MEM 权重，
+        # 将起搏器 spike 统计与专家输出的隐藏状态耦合。
+        pre_vec = spikes.float().sum(dim=0)  # [N]
+        post_vec = expert_out.detach()  # [hidden_dim]
+        stdp_cfg = STDPConfig()
+        self.memory.update_weights(
+            self.self_model.key,
+            pre=pre_vec,
+            post=post_vec,
+            stdp_config=stdp_cfg,
+            third_factor=third_factor,
+            dt=self.config.dt_ms,
+        )
 
         goals, utilities = self.intention(self.memory, self.pred, self.self_model, self.imagination)
         commit_state = self.commit(goals, utilities, meta, self.self_model)
@@ -219,6 +238,26 @@ class SelfSNN(nn.Module):
         consistency_stats = self.consistency.stats()
 
         self.self_model.update_state(meta, act_out)
+
+        # 事件级索引：将当前自我状态 / Meta / 承诺结果写入 EpisodicIndex
+        try:
+            theta_phase = pmc_out["theta_phase"]
+            phase_val = float(theta_phase[-1].detach()) if theta_phase.numel() > 0 else 0.0
+        except Exception:
+            phase_val = 0.0
+        epi_key = EpisodicIndex.build_key(
+            self.self_model.key,
+            context_key=wm_state.detach(),
+            phase=phase_val,
+        )
+        committed = bool(commit_state.get("committed", False))
+        summary = (
+            f"conf={float(meta['confidence']):.3f}, "
+            f"uncert={float(meta['uncertainty']):.3f}, "
+            f"energy={float(act_out.get('energy', 0.0)):.3f}, "
+            f"committed={committed}"
+        )
+        self.episodic_index.add(epi_key, summary)
 
         # v0: 自发 / 点火统计
         spikes_f = spikes.float()

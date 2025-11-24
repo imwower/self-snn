@@ -32,9 +32,10 @@ class ConsistencyModule:
         self._ece = torch.tensor(0.5)
 
     def __call__(self, commit_state: Dict[str, Any], act_out: Dict[str, Any]) -> torch.Tensor:
-        # 成功信号：这里用“动作是否显著非零”作为占位
-        success_signal = float(act_out.get("action", 0.0).abs() > 0.01)
-        y = torch.tensor(success_signal, dtype=torch.float32)
+        # 成功信号：将「是否实际承诺执行」视作观测标签，
+        # 用于校准承诺概率的自洽性（Brier/ECE）。
+        committed = bool(commit_state.get("committed", False))
+        y = torch.tensor(1.0 if committed else 0.0, dtype=torch.float32)
 
         # 承诺概率估计（若无则视为 0.5）
         prob = commit_state.get("prob", torch.tensor(0.5))
