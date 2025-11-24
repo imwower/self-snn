@@ -1,4 +1,5 @@
 import argparse
+import json
 from pathlib import Path
 
 from self_snn.core.workspace import SelfSNN, SelfSNNConfig
@@ -8,10 +9,12 @@ from self_snn.utils.viz import save_raster, save_curve, save_heatmap
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--logdir", type=str, default="runs/s0_minimal")
+    parser.add_argument("--steps", type=int, default=300)
+    parser.add_argument("--json", action="store_true", help="输出关键指标的 JSON")
     args = parser.parse_args()
 
     model = SelfSNN(SelfSNNConfig())
-    out = model(steps=300)
+    out = model(steps=int(args.steps))
     spikes = out["spikes"]
     vm_trace = out.get("vm_trace", None)
     ignite_mask = out.get("ignite_mask", None)
@@ -33,11 +36,21 @@ def main() -> None:
     if ignite_mask is not None:
         save_heatmap(ignite_mask.float(), figs_dir / "ignition_heatmap.png", xlabel="neuron", ylabel="t", title="Ignition Heatmap")
 
-    print(
-        f"Ignition eval: mean_rate={rate:.3f} Hz, "
-        f"ignition_rate={ignition_rate:.3f}, coverage={ignite_cov_mean:.3f}, branching_kappa={kappa:.3f}, "
-        f"figs saved to {figs_dir}"
-    )
+    metrics = {
+        "ignition_rate": ignition_rate,
+        "branching_kappa": kappa,
+        "mean_spike_rate_hz": rate,
+        "ignite_coverage": ignite_cov_mean,
+    }
+
+    if args.json:
+        print(json.dumps(metrics, ensure_ascii=False))
+    else:
+        print(
+            f"Ignition eval: mean_rate={rate:.3f} Hz, "
+            f"ignition_rate={ignition_rate:.3f}, coverage={ignite_cov_mean:.3f}, branching_kappa={kappa:.3f}, "
+            f"figs saved to {figs_dir}"
+        )
 
 
 if __name__ == "__main__":

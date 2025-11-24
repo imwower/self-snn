@@ -1,4 +1,5 @@
 import argparse
+import json
 from pathlib import Path
 
 import torch
@@ -15,6 +16,7 @@ def main() -> None:
     parser.add_argument("--trials", type=int, default=32)
     parser.add_argument("--seq_len", type=int, default=20)
     parser.add_argument("--delay", type=int, default=5)
+    parser.add_argument("--json", action="store_true", help="输出关键指标的 JSON")
     args = parser.parse_args()
 
     logger = setup_logger(args.logdir)
@@ -64,12 +66,22 @@ def main() -> None:
         f"键数={mem_stats['n_keys']:.0f}, 平均延迟={mem_stats['mean_delay']:.1f}, 方差={mem_stats['var_delay']:.1f}",
     )
 
-    print(
-        f"Memory eval: 命中率={hit_rate:.3f}, "
-        f"平均重放时间误差={mean_err:.3f} ms, "
-        f"平均延迟={mem_stats['mean_delay']:.1f} 步, "
-        f"图已保存到 {figs_dir / 'delay_replay_error.png'}"
-    )
+    metrics = {
+        "cue_hit_rate": float(hit_rate),
+        "replay_time_error_ms": float(mean_err),
+        "mean_delay_steps": float(mem_stats.get("mean_delay", 0.0)),
+        "var_delay": float(mem_stats.get("var_delay", 0.0)),
+    }
+
+    if args.json:
+        print(json.dumps(metrics, ensure_ascii=False))
+    else:
+        print(
+            f"Memory eval: 命中率={hit_rate:.3f}, "
+            f"平均重放时间误差={mean_err:.3f} ms, "
+            f"平均延迟={mem_stats['mean_delay']:.1f} 步, "
+            f"图已保存到 {figs_dir / 'delay_replay_error.png'}"
+        )
 
 
 if __name__ == "__main__":

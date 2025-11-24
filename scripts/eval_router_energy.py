@@ -1,4 +1,5 @@
 import argparse
+import json
 from pathlib import Path
 
 from self_snn.core.workspace import SelfSNN, SelfSNNConfig
@@ -10,6 +11,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--steps", type=int, default=100)
     parser.add_argument("--logdir", type=str, default="runs/agency_s1")
+    parser.add_argument("--json", action="store_true", help="输出关键指标的 JSON")
     args = parser.parse_args()
 
     logger = setup_logger(args.logdir)
@@ -24,9 +26,30 @@ def main() -> None:
     dense_synops_ratio = 1.0
     saving_pct = (1.0 - moe_ratio) * 100.0
 
-    print("Router Top-K indices:", topk.tolist())
-    print(f"MoE 条件计算能耗比 (masked/dense synops): {moe_ratio:.3f}")
-    print(f"相比密集前向 synops 下降约 {saving_pct:.1f}%")
+    spikes = out.get("spikes")
+    dt_ms = float(model.config.dt_ms if hasattr(model, "config") else 1.0)
+    avg_spikes_per_s = 0.0
+    if spikes is not None:
+        avg_spikes_per_s = float(spikes.float().mean() * 1000.0 / max(dt_ms, 1e-6))
+
+    energy_stats = out.get("energy_stats", None)
+    synops_dense = float(getattr(energy_stats, "synops_dense", 0.0) if energy_stats is not None else 0.0)
+    synops_sparse = float(getattr(energy_stats, "synops_masked", 0.0) if energy_stats is not None else 0.0)
+
+    metrics = {
+        "synops_dense": synops_dense,
+        "synops_sparse": synops_sparse,
+        "synops_ratio": moe_ratio,
+        "avg_spikes_per_s": avg_spikes_per_s,
+        "topk": topk.tolist(),
+    }
+
+    if not args.json:
+        print("Router Top-K indices:", topk.tolist())
+        print(f"MoE 条件计算能耗比 (masked/dense synops): {moe_ratio:.3f}")
+        print(f"相比密集前向 synops 下降约 {saving_pct:.1f}%")
+    else:
+        print(json.dumps(metrics, ensure_ascii=False))
 
     # 中文日志与节能对照报告
     log_router(logger, f"Top-K 专家={topk.tolist()}；MoE 条件能耗比={moe_ratio:.3f}")
