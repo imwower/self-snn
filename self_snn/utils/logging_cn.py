@@ -21,7 +21,12 @@ def setup_logger(
         fh.setFormatter(fmt)
         logger.addHandler(fh)
     # 可选输出到 stdout，便于调试时直接在控制台看到关键节点日志
-    if to_stdout and not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
+    # FileHandler 继承自 StreamHandler，因此需要排除已有的 FileHandler，否则不会新增 stdout handler
+    has_stdout = any(
+        isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+        for h in logger.handlers
+    )
+    if to_stdout and not has_stdout:
         sh = logging.StreamHandler()
         sh.setLevel(logging.INFO)
         sh.setFormatter(fmt)
