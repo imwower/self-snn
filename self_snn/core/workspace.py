@@ -245,9 +245,12 @@ class SelfSNN(nn.Module):
             phase_val = float(theta_phase[-1].detach()) if theta_phase.numel() > 0 else 0.0
         except Exception:
             phase_val = 0.0
+        # 确保 EpisodicIndex 复合键在同一设备上（避免 mps/cpu 混用）
+        self_key_dev = self.self_model.key.to(spikes.device)
+        context_key = wm_state.detach().to(spikes.device)
         epi_key = EpisodicIndex.build_key(
-            self.self_model.key,
-            context_key=wm_state.detach(),
+            self_key_dev,
+            context_key=context_key,
             phase=phase_val,
         )
         committed = bool(commit_state.get("committed", False))
