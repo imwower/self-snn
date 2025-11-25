@@ -18,6 +18,7 @@
 - [训练与可视化](#训练与可视化)
 - [验收标准](#验收标准)
 - [单元测试](#单元测试)
+- [与 me-agent 的联合训练](#与-me-agent-的联合训练)
 - [日志与提交规范（中文）](#日志与提交规范中文)
 - [路线图](#路线图)
 - [常见问题](#常见问题)
@@ -282,6 +283,12 @@ python scripts/eval_router_energy.py --logdir runs/agency_moe
 - `test_efference_copy.py`：打开拷贝对消后预测误差显著下降。
 - `test_self_key_stability.py`：Self-Key 余弦相似（小时级） ≥ 0.95。
 
+## 与 me-agent 的联合训练
+
+- me-agent 输出的 TrainSchedule/GeneratedTask 可用 `scripts/train_from_schedule.py --train-schedule <path>` 直接消费。  
+- `self_snn/data/task_adapter.py` 将任务转成占位多模态 spike 数据；`--dry-run` 仅验证配置/路径。  
+- 示例：`python scripts/train_from_schedule.py --train-schedule ../me-agent/outputs/train_schedule.json --dry-run`
+
 ## 日志与提交规范（中文）
 
 ### 关键中文日志（`utils/logging_cn.py` 输出示例）
@@ -320,4 +327,3 @@ python scripts/eval_router_energy.py --logdir runs/agency_moe
 - **节能不明显**：确认掩码层真正屏蔽突触运算；提高 M / K 比；把前端改为事件驱动。
 - **延迟塌缩 / 串扰**：增加 `delay_entropy_reg`；扩大 `dmax`；键采用相位分区。
 - **自我漂移**：Self-Key 加相位锚与 L2 正则；监控小时级相似度。
-
