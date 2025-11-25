@@ -72,7 +72,8 @@ def run_from_schedule(schedule_path: str, dry_run: bool = False, duration: int |
     logger = setup_logger(output_dir, to_stdout=True)
     writer = SummaryWriter(output_dir)
 
-    run_duration = duration or int(cfg.get("runtime", {}).get("duration_s", 60))
+    schedule_max_steps = schedule.get("max_steps")
+    run_duration = duration or schedule_max_steps or int(cfg.get("runtime", {}).get("duration_s", 60))
     max_epochs = int(schedule.get("max_epochs", 1))
 
     for epoch in range(max_epochs):
