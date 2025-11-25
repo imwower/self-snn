@@ -5,17 +5,27 @@ from pathlib import Path
 from typing import Optional
 
 
-def setup_logger(logdir: str | Path, name: str = "self_snn") -> logging.Logger:
+def setup_logger(
+    logdir: str | Path,
+    name: str = "self_snn",
+    to_stdout: bool = False,
+) -> logging.Logger:
     logdir = Path(logdir)
     logdir.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger(name)
     logger.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(asctime)s - %(message)s")
     if not logger.handlers:
         fh = logging.FileHandler(logdir / "train.log", encoding="utf-8")
         fh.setLevel(logging.INFO)
-        fmt = logging.Formatter("%(asctime)s - %(message)s")
         fh.setFormatter(fmt)
         logger.addHandler(fh)
+    # 可选输出到 stdout，便于调试时直接在控制台看到关键节点日志
+    if to_stdout and not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
+        sh = logging.StreamHandler()
+        sh.setLevel(logging.INFO)
+        sh.setFormatter(fmt)
+        logger.addHandler(sh)
     return logger
 
 

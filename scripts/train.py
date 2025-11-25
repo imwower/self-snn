@@ -284,6 +284,11 @@ def main() -> None:
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--logdir", type=str, default="")
     parser.add_argument("--duration", type=int, default=0)
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="打印训练关键日志到 stdout，便于实时观察（默认仅写入 logdir/train.log）",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -294,7 +299,7 @@ def main() -> None:
 
     # 优先使用命令行 logdir，其次配置文件 logging.logdir，最后默认 runs/debug
     logdir = args.logdir or cfg.get("logging", {}).get("logdir", "runs/debug")
-    logger = setup_logger(logdir)
+    logger = setup_logger(logdir, to_stdout=args.verbose)
     writer = SummaryWriter(logdir)
 
     # 优先使用命令行 duration，其次 runtime.duration_s
