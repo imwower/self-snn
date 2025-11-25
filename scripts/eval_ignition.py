@@ -4,16 +4,28 @@ from pathlib import Path
 
 from self_snn.core.workspace import SelfSNN, SelfSNNConfig
 from self_snn.utils.viz import save_raster, save_curve, save_heatmap
+from self_snn.utils.config_loader import load_config, build_self_snn_config
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default="", help="YAML 配置路径，留空则使用默认 SelfSNNConfig")
     parser.add_argument("--logdir", type=str, default="runs/s0_minimal")
     parser.add_argument("--steps", type=int, default=300)
     parser.add_argument("--json", action="store_true", help="输出关键指标的 JSON")
     args = parser.parse_args()
 
-    model = SelfSNN(SelfSNNConfig())
+    cfg = None
+    model_cfg = SelfSNNConfig()
+    if args.config:
+        cfg = load_config(args.config)
+        model_cfg = build_self_snn_config(cfg)
+
+    logdir = args.logdir
+    if not logdir and cfg is not None:
+        logdir = cfg.get("logging", {}).get("logdir", "runs/s0_minimal")
+
+    model = SelfSNN(model_cfg)
     out = model(steps=int(args.steps))
     spikes = out["spikes"]
     vm_trace = out.get("vm_trace", None)
@@ -24,7 +36,7 @@ def main() -> None:
     ignite_cov = out.get("ignite_coverage")
     ignite_cov_mean = float(ignite_cov.mean()) if ignite_cov is not None else 0.0
 
-    figs_dir = Path(args.logdir) / "figs"
+    figs_dir = Path(logdir) / "figs"
     figs_dir.mkdir(parents=True, exist_ok=True)
     # 栅格图
     save_raster(spikes, figs_dir / "raster_spikes.png")

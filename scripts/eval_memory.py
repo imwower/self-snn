@@ -8,10 +8,12 @@ from self_snn.core.workspace import SelfSNN, SelfSNNConfig
 from self_snn.utils.viz import save_curve
 from self_snn.utils.logging_cn import setup_logger, log_memory_write, log_memory_read
 from self_snn.meta.plasticity import STDPConfig
+from self_snn.utils.config_loader import load_config, build_self_snn_config
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default="", help="YAML 配置路径，留空则使用默认 SelfSNNConfig")
     parser.add_argument("--logdir", type=str, default="runs/agency_s1")
     parser.add_argument("--trials", type=int, default=32)
     parser.add_argument("--seq_len", type=int, default=20)
@@ -19,8 +21,18 @@ def main() -> None:
     parser.add_argument("--json", action="store_true", help="输出关键指标的 JSON")
     args = parser.parse_args()
 
-    logger = setup_logger(args.logdir)
-    model = SelfSNN(SelfSNNConfig())
+    cfg = None
+    model_cfg = SelfSNNConfig()
+    if args.config:
+        cfg = load_config(args.config)
+        model_cfg = build_self_snn_config(cfg)
+
+    logdir = args.logdir
+    if not logdir and cfg is not None:
+        logdir = cfg.get("logging", {}).get("logdir", "runs/agency_s1")
+
+    logger = setup_logger(logdir)
+    model = SelfSNN(model_cfg)
     key = model.self_model.key
     stdp_cfg = STDPConfig()
 
@@ -47,7 +59,7 @@ def main() -> None:
     hit_rate = sum(hit_flags) / max(len(hit_flags), 1)
     mean_err = sum(timing_errors) / max(len(timing_errors), 1)
 
-    figs_dir = Path(args.logdir) / "figs"
+    figs_dir = Path(logdir) / "figs"
     figs_dir.mkdir(parents=True, exist_ok=True)
     # 使用 timing_errors 曲线近似 delay_replay_error，可视化 RMS 级误差
     save_curve(

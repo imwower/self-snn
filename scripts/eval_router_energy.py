@@ -5,18 +5,30 @@ from pathlib import Path
 from self_snn.core.workspace import SelfSNN, SelfSNNConfig
 from self_snn.utils.viz import save_curve
 from self_snn.utils.logging_cn import setup_logger, log_energy, log_router
+from self_snn.utils.config_loader import load_config, build_self_snn_config
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default="", help="YAML 配置路径，留空则使用默认 SelfSNNConfig")
     parser.add_argument("--steps", type=int, default=100)
     parser.add_argument("--logdir", type=str, default="runs/agency_s1")
     parser.add_argument("--json", action="store_true", help="输出关键指标的 JSON")
     args = parser.parse_args()
 
-    logger = setup_logger(args.logdir)
+    cfg = None
+    model_cfg = SelfSNNConfig()
+    if args.config:
+        cfg = load_config(args.config)
+        model_cfg = build_self_snn_config(cfg)
 
-    model = SelfSNN(SelfSNNConfig())
+    logdir = args.logdir
+    if not logdir and cfg is not None:
+        logdir = cfg.get("logging", {}).get("logdir", "runs/agency_s1")
+
+    logger = setup_logger(logdir)
+
+    model = SelfSNN(model_cfg)
     out = model(steps=args.steps)
 
     router_stats = out["router_stats"]
@@ -59,7 +71,7 @@ def main() -> None:
     )
 
     # 文本报告，便于快速对比节能达标情况
-    report_path = Path(args.logdir) / "router_energy_report.txt"
+    report_path = Path(logdir) / "router_energy_report.txt"
     target_saving = 60.0
     passed = saving_pct >= target_saving
     with report_path.open("w", encoding="utf-8") as f:
@@ -70,7 +82,7 @@ def main() -> None:
         f.write(f"是否达到节能目标(≥{target_saving:.1f}%): {'是' if passed else '否'}\n")
 
     # 画一个简单的能耗对比曲线：dense vs masked
-    figs_dir = Path(args.logdir) / "figs"
+    figs_dir = Path(logdir) / "figs"
     figs_dir.mkdir(parents=True, exist_ok=True)
     save_curve(
         [dense_synops_ratio, moe_ratio],
